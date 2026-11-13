@@ -611,7 +611,7 @@ def process_library(library_dir: Path, threads: int, crf: int,
                     consecutive_failures += 1
                 elif convert_to_av1(file_path, local, threads, crf, preset):
                     converted += 1
-                    consecutive_failures += 1
+                    consecutive_failures = 0
                 else:
                     failed += 1
                     consecutive_failures += 1
