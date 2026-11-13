@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -246,6 +247,15 @@ def run_ffmpeg_with_progress(cmd: list[str], total_dur: float) -> int:
     active_ffmpeg_proc = None
     return rc
 
+def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    """Calculate SHA-256 without loading the entire file into memory."""
+    digest = hashlib.sha256()
+
+    with path.open("rb") as f:
+        while chunk := f.read(chunk_size):
+            digest.update(chunk)
+
+    return digest.hexdigest()
 
 def verify_output(output: Path, original_duration: float) -> bool:
     """Verify the encoded file before it replaces the original."""
@@ -298,7 +308,7 @@ def verify_output(output: Path, original_duration: float) -> bool:
 
 
 def convert_to_av1(file_path: Path, local_input: Path,
-                   threads: int, crf: int, preset: int) -> tuple[bool, int, int]:
+                   threads: int, crf: int, preset: int, expected_sha256: str) -> tuple[bool, int, int]:
     """Encode an already-staged file and atomically replace the original."""
     global active_tmp_output
 
@@ -326,10 +336,9 @@ def convert_to_av1(file_path: Path, local_input: Path,
             log("  [Error] Verification failed. Original kept.")
             return False, 0 ,0
 
-        #Guard: If the staged copy is truncated
-        if file_path.stat().st_size != local_input.stat().st_size:
-            log("  [Error] Original changed or staged copy incomplete. Original kept.")
-            return False, 0 ,0
+        if sha256_file(file_path) != expected_sha256:
+            log("  [Error] Original changed since staging. Original kept.")
+            return False, 0, 0
 
         original_size = file_path.stat().st_size
         output_size = tmp_output.stat().st_size
@@ -451,6 +460,7 @@ def prepare(idx: int, file_path: Path, scratch: Path) -> tuple[str, dict | None,
             t0 = time.time()
             shutil.copy2(file_path, part)
             os.replace(part, local)
+            meta["_staged_sha256"] = sha256_file(local)
             elapsed = time.time() - t0
             size = local.stat().st_size
             rate = size / elapsed / 1e6 if elapsed > 0 else 0
@@ -609,12 +619,18 @@ def process_library(library_dir: Path, threads: int, crf: int,
                     log(f"  Skipping: codec is {codec}.")
                     skipped += 1
                     consecutive_failures = 0
-                elif status == "failed" or local is None:
+                elif status == "failed" or local is None or meta is None:
                     log("  [Error] Could not prepare file.")
                     failed += 1
                     consecutive_failures += 1
                 else:
-                    success, orig_sz, out_sz = convert_to_av1(file_path, local, threads, crf, preset)
+                    expected_sha256 = meta["_staged_sha256"]
+                    if "_staged_sha256" not in meta:
+                        log("  [Error] Missing staged SHA-256 hash.")
+                        failed += 1
+                        consecutive_failures += 1
+                        continue
+                    success, orig_sz, out_sz = convert_to_av1(file_path, local, threads, crf, preset, expected_sha256)
                     if success:
                         converted += 1
                         consecutive_failures = 0
