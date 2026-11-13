@@ -34,6 +34,9 @@ MIN_FREE_PCT = 10.0             # keep at least this % of the scratch device fre
 SPACE_POLL_SECONDS = 30         # how often to re-check while waiting
 SPACE_WAIT_TIMEOUT = 4 * 3600   # give up on a file after waiting this long
 
+CRF_RANGE = (0, 63)
+PRESET_RANGE = (0, 13)
+
 # State needed by the signal handler
 active_ffmpeg_proc: subprocess.Popen | None = None
 active_tmp_output: Path | None = None
@@ -618,6 +621,17 @@ def resolve_threads(cli_value: int | None) -> int:
         return int(env)
     return len(os.sched_getaffinity(0))
 
+def int_in_range(lo: int, hi: int):
+    """argparse type: a whole number within [lo, hi]."""
+    def check(value: str) -> int:
+        try:
+            n = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{value!r} is not a whole number")
+        if not lo <= n <= hi:
+            raise argparse.ArgumentTypeError(f"{n} is out of range (allowed: {lo}-{hi})")
+        return n
+    return check
 
 def main() -> None:
     global VERBOSE
@@ -625,8 +639,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Convert MPEG-2 MKV files to AV1.")
     ap.add_argument("library", type=Path, help="Root directory of the video library")
     ap.add_argument("--threads", type=int, default=None, help="SVT-AV1 threads per task")
-    ap.add_argument("--crf", type=int, default=24)
-    ap.add_argument("--preset", type=int, default=5)
+    ap.add_argument("--crf", type=int_in_range(*CRF_RANGE), default=24,
+                    metavar="0..63", help="Quality (lower = better/larger)")
+    ap.add_argument("--preset", type=int_in_range(*PRESET_RANGE), default=4,
+                    metavar="0..13", help="SVT-AV1 preset (lower = slower/better)")
     ap.add_argument(
         "-n", "--dry-run", action="store_true",
         help="Probe files and report what would be done; copy/encode/replace nothing",
