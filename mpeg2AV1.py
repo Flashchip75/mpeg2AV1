@@ -501,7 +501,7 @@ def prepare(idx: int, file_path: Path, scratch: Path) -> tuple[str, dict | None,
 def find_mkv_files(library_dir: Path) -> list[Path]:
     """Recursively search for valid .mkv video files, excluding skip-marked entries."""
     files = []
-    for root, dirs, names in os.walk(library_dir, followlinks=True,):
+    for root, dirs, names in os.walk(library_dir, followlinks=False,):
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for name in names:
             low = name.lower()
