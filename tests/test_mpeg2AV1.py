@@ -4,11 +4,14 @@ import shutil
 import subprocess
 from subprocess import CompletedProcess
 from pathlib import Path
+from collections import namedtuple
 
 import pytest
 
 import mpeg2AV1 as m
 
+Usage = namedtuple("Usage", "total used free")
+GB = 10**9
 
 # --------------------------------------------------------------------------- #
 # Fixtures / helpers
@@ -98,6 +101,45 @@ def test_find_mkv_files_filters_and_recurses(tmp_path):
 
     assert m.find_mkv_files(lib) == sorted(keep)
 
+# --------------------------------------------------------------------------- #
+# Tests for disk space management and prefetch wait logic
+# --------------------------------------------------------------------------- #
+
+def fake_usage(monkeypatch, *free_values, total=100 * GB):
+    """Each disk_usage() call returns the next free value (the last one repeats)."""
+    seq = list(free_values)
+
+    def _du(path):
+        free = seq.pop(0) if len(seq) > 1 else seq[0]
+        return Usage(total, total - free, free)
+
+    monkeypatch.setattr(m.shutil, "disk_usage", _du)
+
+
+def test_wait_for_space_passes_when_enough_free(monkeypatch, tmp_path):
+    fake_usage(monkeypatch, 50 * GB)
+    m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)   # 40% would remain
+
+
+def test_wait_for_space_rejects_file_that_can_never_fit(monkeypatch, tmp_path):
+    fake_usage(monkeypatch, 95 * GB)
+    with pytest.raises(m.NotEnoughSpace):
+        m.wait_for_space(tmp_path, 90 * GB, min_free_pct=15)
+
+
+def test_wait_for_space_waits_then_proceeds(monkeypatch, tmp_path):
+    fake_usage(monkeypatch, 20 * GB, 20 * GB, 60 * GB)     # space frees up on 3rd check
+    sleeps = []
+    monkeypatch.setattr(m.time, "sleep", sleeps.append)
+    m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)
+    assert len(sleeps) == 2
+
+
+def test_wait_for_space_times_out(monkeypatch, tmp_path):
+    fake_usage(monkeypatch, 20 * GB)
+    monkeypatch.setattr(m, "SPACE_WAIT_TIMEOUT", 0)
+    with pytest.raises(m.NotEnoughSpace):
+        m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)
 
 # --------------------------------------------------------------------------- #
 # ffprobe wrappers (subprocess mocked)
