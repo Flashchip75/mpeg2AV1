@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 import shutil
 import subprocess
 import argparse
@@ -169,6 +170,44 @@ def test_preset_range(value, ok):
     else:
         with pytest.raises(argparse.ArgumentTypeError):
             check(value)
+
+@pytest.mark.parametrize("value, ok", [
+    ("1", True), ("10", True), ("1024", True),
+    ("0", False), ("-1", False), ("1025", False), ("2.5", False), ("many", False),
+])
+def test_threads_range(value, ok):
+    check = m.int_in_range(*m.THREADS_RANGE)
+    if ok:
+        assert check(value) == int(value)
+    else:
+        with pytest.raises(argparse.ArgumentTypeError):
+            check(value)
+
+
+@pytest.mark.parametrize("bad", ["0", "-4", "1025", "9223372036854775807", "2.5", "many"])
+def test_main_rejects_bad_threads_before_any_work(monkeypatch, tmp_path, capsys, bad):
+    """--threads must be validated at parse time, before any file is touched."""
+    monkeypatch.setattr(sys, "argv", ["prog", str(tmp_path), "--threads", bad])
+    monkeypatch.setattr(
+        m, "process_library", lambda *a, **k: pytest.fail("work started despite bad --threads")
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+
+    assert exc.value.code == 2                       # argparse usage error
+    assert "--threads" in capsys.readouterr().err    # message names the bad flag
+
+
+def test_main_passes_valid_threads_through(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["prog", str(tmp_path), "--threads", "4"])
+    monkeypatch.setattr(m, "process_library", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(m, "MIN_FREE_PCT", m.MIN_FREE_PCT)  # main() may overwrite it; restored afterwards
+
+    m.main()
+
+    assert calls[0][1] == 4    # process_library(library, threads, crf, preset, dry_run)
 
 # --------------------------------------------------------------------------- #
 # ffprobe wrappers (subprocess mocked)
