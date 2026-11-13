@@ -254,7 +254,6 @@ def test_get_video_duration(monkeypatch):
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: completed("garbage"))
     assert m.get_video_duration(Path("x.mkv")) == 0.0
 
-
 # --------------------------------------------------------------------------- #
 # verify_output
 # --------------------------------------------------------------------------- #
@@ -381,6 +380,10 @@ def fake_encoder(rc=0):
 
 def test_convert_success_replaces_original(monkeypatch, staged):
     original, local = staged
+
+    # Deliberately make the local copy a different size than the original
+    local.write_bytes(original.read_bytes())
+
     monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
     monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
@@ -391,6 +394,17 @@ def test_convert_success_replaces_original(monkeypatch, staged):
     assert not local.exists()
     assert not m.tmp_output_path(original).exists()
     assert m.active_tmp_output is None
+
+def test_convert_refuses_when_staged_copy_differs_from_original(monkeypatch, staged):
+    original, local = staged
+    local.write_bytes(b"truncated")
+    monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
+    monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
+    monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
+
+    assert not m.convert_to_av1(original, local, 4, 24, 5)
+    assert original.read_bytes() == b"MPEG2" * 100
+    assert not m.tmp_output_path(original).exists()
 
 
 @pytest.mark.parametrize(

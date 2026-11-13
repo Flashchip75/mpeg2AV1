@@ -324,6 +324,11 @@ def convert_to_av1(file_path: Path, local_input: Path,
             log("  [Error] Verification failed. Original kept.")
             return False
 
+        #Guard: If the staged copy is truncated
+        if file_path.stat().st_size != local_input.stat().st_size:
+            log("  [Error] Original changed or staged copy incomplete. Original kept.")
+            return False
+
         original_size = file_path.stat().st_size
         output_size = tmp_output.stat().st_size
 
