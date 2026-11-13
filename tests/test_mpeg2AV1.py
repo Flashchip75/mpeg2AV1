@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import argparse
 from subprocess import CompletedProcess
 from pathlib import Path
 from collections import namedtuple
@@ -144,6 +145,18 @@ def test_wait_for_space_times_out(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # ffprobe wrappers (subprocess mocked)
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("value, ok", [
+    ("0", True), ("4", True), ("13", True),
+    ("-2", False), ("-1", False), ("14", False), ("4.5", False), ("fast", False),
+])
+def test_preset_range(value, ok):
+    check = m.int_in_range(*m.PRESET_RANGE)
+    if ok:
+        assert check(value) == int(value)
+    else:
+        with pytest.raises(argparse.ArgumentTypeError):
+            check(value)
 
 def test_probe_video_returns_first_stream(monkeypatch):
     out = json.dumps({"streams": [{"codec_name": "mpeg2video", "width": 720}]})
