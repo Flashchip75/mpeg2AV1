@@ -143,8 +143,20 @@ def test_wait_for_space_times_out(monkeypatch, tmp_path):
         m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)
 
 # --------------------------------------------------------------------------- #
-# ffprobe wrappers (subprocess mocked)
+# Argument validation
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("value, ok", [
+    ("0", True), ("24", True), ("63", True),
+    ("-1", False), ("64", False), ("24.5", False), ("abc", False),
+])
+def test_crf_range(value, ok):
+    check = m.int_in_range(*m.CRF_RANGE)
+    if ok:
+        assert check(value) == int(value)
+    else:
+        with pytest.raises(argparse.ArgumentTypeError):
+            check(value)
 
 @pytest.mark.parametrize("value, ok", [
     ("0", True), ("4", True), ("13", True),
@@ -157,6 +169,10 @@ def test_preset_range(value, ok):
     else:
         with pytest.raises(argparse.ArgumentTypeError):
             check(value)
+
+# --------------------------------------------------------------------------- #
+# ffprobe wrappers (subprocess mocked)
+# --------------------------------------------------------------------------- #
 
 def test_probe_video_returns_first_stream(monkeypatch):
     out = json.dumps({"streams": [{"codec_name": "mpeg2video", "width": 720}]})
