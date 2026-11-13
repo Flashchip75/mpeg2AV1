@@ -339,7 +339,7 @@ def convert_to_av1(file_path: Path, local_input: Path,
 
         log("  Success: original replaced with verified AV1 file.")
         log(
-            f"  Size: {original_size / 1e6:.0f} MB -> {output_size / 1e6:.0f} MB "
+            f"  Size: {fmt_size(original_size)} -> {fmt_size(output_size)} "
             f"({100 * output_size / original_size:.1f}%)"
         )
         return True
