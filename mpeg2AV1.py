@@ -585,6 +585,8 @@ def process_library(library_dir: Path, threads: int, crf: int,
     total_original_bytes = 0
     total_output_bytes = 0
 
+    t_start = time.time()
+
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(prepare, 0, my_files[0], scratch)
@@ -629,8 +631,12 @@ def process_library(library_dir: Path, threads: int, crf: int,
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
+    elapsed = time.time() - t_start
+
     log("=" * 60)
     log(f"Done. converted={converted} skipped={skipped} failed={failed}")
+    log(f"Total time elapsed: {fmt_secs(elapsed)}")
+    
     if converted > 0 and total_original_bytes > 0:
         saved_bytes = total_original_bytes - total_output_bytes
         overall_pct = (100 * total_output_bytes / total_original_bytes)
