@@ -127,7 +127,7 @@ def graceful_exit(signum, frame):
     log("Clean exit. Original file untouched.")
     # os._exit: a prefetch copy in the worker thread can't be interrupted,
     # so sys.exit() would hang waiting for it.
-    os._exit(0)
+    os._exit(128 + signum)
 
 
 signal.signal(signal.SIGTERM, graceful_exit)
