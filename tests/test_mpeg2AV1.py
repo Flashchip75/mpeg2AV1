@@ -4,6 +4,7 @@ import sys
 import shutil
 import subprocess
 import argparse
+import hashlib
 from subprocess import CompletedProcess
 from pathlib import Path
 from collections import namedtuple
@@ -77,6 +78,21 @@ def test_build_ffmpeg_cmd():
     assert cmd[cmd.index("-crf") + 1] == "24"
     assert cmd[cmd.index("-preset") + 1] == "5"
     assert cmd[cmd.index("-svtav1-params") + 1] == "lp=8"
+
+def test_sha256_file(tmp_path):
+    test_file = tmp_path / "sample.bin"
+    content = b"MPEG-2 to AV1 test stream data... " * 500  # ~17 KB
+    test_file.write_bytes(content)
+
+    expected_hash = hashlib.sha256(content).hexdigest()
+
+    # 1. Test default dynamic chunk_size (chunk_size=None)
+    computed_default = m.sha256_file(test_file)
+    assert computed_default == expected_hash
+
+    # 2. Test explicit custom chunk_size (forcing multiple chunk iterations, e.g., 64 bytes)
+    computed_custom = m.sha256_file(test_file, chunk_size=64)
+    assert computed_custom == expected_hash
 
 
 # --------------------------------------------------------------------------- #
