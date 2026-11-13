@@ -34,6 +34,7 @@ MIN_FREE_PCT = 10.0             # keep at least this % of the scratch device fre
 SPACE_POLL_SECONDS = 30         # how often to re-check while waiting
 SPACE_WAIT_TIMEOUT = 4 * 3600   # give up on a file after waiting this long
 
+THREADS_RANGE = (1, 1024)
 CRF_RANGE = (0, 63)
 PRESET_RANGE = (0, 13)
 
@@ -638,7 +639,8 @@ def main() -> None:
 
     ap = argparse.ArgumentParser(description="Convert MPEG-2 MKV files to AV1.")
     ap.add_argument("library", type=Path, help="Root directory of the video library")
-    ap.add_argument("--threads", type=int, default=None, help="SVT-AV1 threads per task")
+    ap.add_argument("--threads", type=int_in_range(*THREADS_RANGE), default=None,
+                    metavar="1..1024", help="SVT-AV1 threads per task")
     ap.add_argument("--crf", type=int_in_range(*CRF_RANGE), default=24,
                     metavar="0..63", help="Quality (lower = better/larger)")
     ap.add_argument("--preset", type=int_in_range(*PRESET_RANGE), default=4,
@@ -657,8 +659,6 @@ def main() -> None:
 
     if not args.library.is_dir():
         sys.exit(f"Not a directory: {args.library}")
-    if args.threads is not None and args.threads < 1:
-        sys.exit("--threads must be at least 1")
 
     threads = resolve_threads(args.threads)
 
