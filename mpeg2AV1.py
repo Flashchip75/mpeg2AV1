@@ -648,7 +648,7 @@ def main() -> None:
 
     log(f"Using {threads} encoder threads per task.")
     log(f"Library: {args.library.resolve()}")
-    log(f"Slurm task: {TASK_ID}/{TOTAL_TASKS} on {NODE} (job {JOB_ID})")
+    log(f"Slurm task: id {TASK_ID} (ids 0-{TOTAL_TASKS - 1}, {TOTAL_TASKS} tasks total) on {NODE} (job {JOB_ID})")
     vlog(
         f"crf={args.crf} preset={args.preset} "
         f"download_slots_per_node={DOWNLOAD_SLOTS_PER_NODE} dry_run={args.dry_run}"
