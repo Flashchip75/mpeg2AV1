@@ -637,12 +637,11 @@ def process_library(library_dir: Path, threads: int, crf: int,
     log(f"Done. converted={converted} skipped={skipped} failed={failed}")
     log(f"Total time elapsed: {fmt_secs(elapsed)}")
     
-    if converted > 0 and total_original_bytes > 0:
-        saved_bytes = total_original_bytes - total_output_bytes
-        overall_pct = (100 * total_output_bytes / total_original_bytes)
-        log(
-            f"Total library reduction: {fmt_size(total_original_bytes)} -> {fmt_size(total_output_bytes)} "
-            f"({overall_pct:.1f}%), saved {fmt_size(saved_bytes)}"
+    saved_bytes = total_original_bytes - total_output_bytes
+    overall_pct = (100 * total_output_bytes / total_original_bytes) if total_original_bytes > 0 else 0.0
+    log(
+        f"Total library reduction: {fmt_size(total_original_bytes)} -> {fmt_size(total_output_bytes)} "
+        f"({overall_pct:.1f}%), saved {fmt_size(saved_bytes)}"
         )
 
 
