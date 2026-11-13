@@ -209,6 +209,16 @@ def test_main_passes_valid_threads_through(monkeypatch, tmp_path):
 
     assert calls[0][1] == 4    # process_library(library, threads, crf, preset, dry_run)
 
+@pytest.mark.parametrize("value", [
+    "9223372036854775807",     # int64 max
+    "18446744073709551616",    # 2**64
+    "0x7FFFFFFFFFFFFFFF",      # hex form
+    "9" * 5000,                # beyond Python's digit limit
+])
+def test_int_in_range_rejects_huge_values(value):
+    with pytest.raises(argparse.ArgumentTypeError):
+        m.int_in_range(0, 63)(value)
+
 # --------------------------------------------------------------------------- #
 # ffprobe wrappers (subprocess mocked)
 # --------------------------------------------------------------------------- #
