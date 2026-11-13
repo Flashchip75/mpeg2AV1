@@ -383,12 +383,13 @@ def test_convert_success_replaces_original(monkeypatch, staged):
 
     # Deliberately make the local copy a different size than the original
     local.write_bytes(original.read_bytes())
+    expected_sha256 = m.sha256_file(local)
 
     monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
     monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
 
-    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5)
+    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5, expected_sha256)
     assert success
 
     assert original.read_bytes() == b"AV1"
@@ -399,11 +400,13 @@ def test_convert_success_replaces_original(monkeypatch, staged):
 def test_convert_refuses_when_staged_copy_differs_from_original(monkeypatch, staged):
     original, local = staged
     local.write_bytes(b"truncated")
+    expected_sha256 = m.sha256_file(local)
+
     monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
     monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
 
-    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5)
+    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5, expected_sha256)
     assert not success
     assert original.read_bytes() == b"MPEG2" * 100
     assert not m.tmp_output_path(original).exists()
@@ -416,11 +419,13 @@ def test_convert_refuses_when_staged_copy_differs_from_original(monkeypatch, sta
 )
 def test_convert_failure_keeps_original(monkeypatch, staged, duration, rc, verified):
     original, local = staged
+    expected_sha256 = m.sha256_file(local)
+
     monkeypatch.setattr(m, "get_video_duration", lambda p: duration)
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder(rc))
     monkeypatch.setattr(m, "verify_output", lambda out, dur: verified)
 
-    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5)
+    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5, expected_sha256)
     assert not success
 
     assert original.read_bytes() == b"MPEG2" * 100   # untouched
@@ -476,14 +481,15 @@ def test_process_library_counts_and_cleans_scratch(monkeypatch, tmp_path, capsys
         if file_path.name == "a.mkv":
             local = scratch / f"{idx}_{file_path.name}"
             local.write_bytes(b"x")
-            return "ready", {"codec_name": "mpeg2video"}, local
+            return "ready", {"codec_name": "mpeg2video", 
+                             "_staged_sha256": m.sha256_file(file_path)}, local
         if file_path.name == "b.mkv":
             return "skipped", {"codec_name": "h264"}, None
         return "failed", None, None
 
     converted = []
 
-    def fake_convert(file_path, local, threads, crf, preset):
+    def fake_convert(file_path, local, threads, crf, preset, expected_sha):
         converted.append(file_path.name)
         return True, 100, 50
 
@@ -512,7 +518,11 @@ def test_process_library_circuit_breaker(monkeypatch, tmp_path):
     monkeypatch.setattr(m, "find_mkv_files", lambda d: sorted(list(lib_dir.glob("*.mkv"))))
     
     # Mock staging/preparation to always succeed
-    monkeypatch.setattr(m, "prepare", lambda idx, path, scratch: ("success", {"codec_name": "mpeg2video"}, path))
+    monkeypatch.setattr(
+        m, 
+        "prepare", 
+        lambda idx, path, scratch: ("success", {"codec_name": "mpeg2video", "_staged_sha256": m.sha256_file(path)}, path)
+    )
     
     # Mock convert_to_av1 to always fail
     monkeypatch.setattr(m, "convert_to_av1", lambda f, l, t, c, p: False)
@@ -520,7 +530,7 @@ def test_process_library_circuit_breaker(monkeypatch, tmp_path):
     # Track how many times convert_to_av1 was called
     call_count = 0
     orig_convert = m.convert_to_av1
-    def counting_convert(f, l, t, c, p):
+    def counting_convert(f, l, t, c, p, expected_sha):
         nonlocal call_count
         call_count += 1
         return (False, 0, 0)
