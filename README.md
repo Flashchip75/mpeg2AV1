@@ -20,10 +20,11 @@ Finds MPEG-2 `.mkv` files in a video library and re-encodes them to AV1 (SVT-AV1
 1. Recursively scan the video library for `.mkv` files (skipping test/temp markers).
 2. Split the file list across Slurm tasks (`TASK_ID` / `TOTAL_TASKS`).
 3. Probe video streams with `ffprobe`: skip any files that are not `mpeg2video`.
-4. Stage files locally using background prefetching with node-local concurrency limits.
-5. Transcode MPEG-2 to AV1 using `libsvtav1` with real-time progress reporting.
-6. Verify output codec, check duration matches within limits, and run a full stream decode pass to catch corruption.
-7. Atomically replace the original file with the verified AV1 file (`os.replace`).
+4. Stage files locally using background prefetching with node-local concurrency limits, calculating a secure SHA-256 hash of the staged copy using optimal filesystem block sizes.
+5. Transcode MPEG-2 to AV1 using `libsvtav1` with real-time progress reporting and task-level execution timing.
+6. Verify output codec, check duration matches within limits, run a full stream decode pass to catch corruption, and ensure the original file has not changed since staging via SHA-256 validation.
+7. Atomically replace the original file with the verified AV1 file (`os.replace`) and log aggregate library-wide data reduction statistics and elapsed time.
+8. Handle termination signals safely by exiting with `128 + signum` via `os._exit()` to ensure correct status propagation in Slurm without hanging on background prefetch threads.
 
 ## Requirements
 
