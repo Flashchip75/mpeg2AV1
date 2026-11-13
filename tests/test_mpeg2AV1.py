@@ -388,7 +388,8 @@ def test_convert_success_replaces_original(monkeypatch, staged):
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
     monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
 
-    assert m.convert_to_av1(original, local, 4, 24, 5)
+    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5)
+    assert success
 
     assert original.read_bytes() == b"AV1"
     assert not local.exists()
@@ -402,7 +403,8 @@ def test_convert_refuses_when_staged_copy_differs_from_original(monkeypatch, sta
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
     monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
 
-    assert not m.convert_to_av1(original, local, 4, 24, 5)
+    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5)
+    assert not success
     assert original.read_bytes() == b"MPEG2" * 100
     assert not m.tmp_output_path(original).exists()
 
@@ -418,7 +420,8 @@ def test_convert_failure_keeps_original(monkeypatch, staged, duration, rc, verif
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder(rc))
     monkeypatch.setattr(m, "verify_output", lambda out, dur: verified)
 
-    assert not m.convert_to_av1(original, local, 4, 24, 5)
+    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5)
+    assert not success
 
     assert original.read_bytes() == b"MPEG2" * 100   # untouched
     assert not m.tmp_output_path(original).exists()  # temp output removed
@@ -482,7 +485,7 @@ def test_process_library_counts_and_cleans_scratch(monkeypatch, tmp_path, capsys
 
     def fake_convert(file_path, local, threads, crf, preset):
         converted.append(file_path.name)
-        return True
+        return True, 100, 50
 
     monkeypatch.setattr(m, "prepare", fake_prepare)
     monkeypatch.setattr(m, "convert_to_av1", fake_convert)
@@ -520,7 +523,7 @@ def test_process_library_circuit_breaker(monkeypatch, tmp_path):
     def counting_convert(f, l, t, c, p):
         nonlocal call_count
         call_count += 1
-        return orig_convert(f, l, t, c, p)
+        return (False, 0, 0)
     monkeypatch.setattr(m, "convert_to_av1", counting_convert)
 
     # Run process_library with a single task (TASK_ID=0, TOTAL_TASKS=1)

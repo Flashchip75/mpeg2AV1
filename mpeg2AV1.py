@@ -298,7 +298,7 @@ def verify_output(output: Path, original_duration: float) -> bool:
 
 
 def convert_to_av1(file_path: Path, local_input: Path,
-                   threads: int, crf: int, preset: int) -> bool:
+                   threads: int, crf: int, preset: int) -> tuple[bool, int, int]:
     """Encode an already-staged file and atomically replace the original."""
     global active_tmp_output
 
@@ -309,7 +309,7 @@ def convert_to_av1(file_path: Path, local_input: Path,
         total_dur = get_video_duration(local_input)
         if total_dur <= 0:
             log("  [Error] Invalid input duration.")
-            return False
+            return False, 0 ,0
 
         cmd = build_ffmpeg_cmd(local_input, tmp_output, threads, crf, preset)
         log(f"  Encoding MPEG-2 to AV1 (CRF={crf}, preset={preset}, threads={threads})")
@@ -319,17 +319,17 @@ def convert_to_av1(file_path: Path, local_input: Path,
         rc = run_ffmpeg_with_progress(cmd, total_dur)
         if rc != 0:
             log(f"  [Error] FFmpeg exited with code {rc}.")
-            return False
+            return False, 0 ,0
         vlog(f"encode took {fmt_secs(time.time() - t0)}")
 
         if not verify_output(tmp_output, total_dur):
             log("  [Error] Verification failed. Original kept.")
-            return False
+            return False, 0 ,0
 
         #Guard: If the staged copy is truncated
         if file_path.stat().st_size != local_input.stat().st_size:
             log("  [Error] Original changed or staged copy incomplete. Original kept.")
-            return False
+            return False, 0 ,0
 
         original_size = file_path.stat().st_size
         output_size = tmp_output.stat().st_size
@@ -342,11 +342,11 @@ def convert_to_av1(file_path: Path, local_input: Path,
             f"  Size: {fmt_size(original_size)} -> {fmt_size(output_size)} "
             f"({100 * output_size / original_size:.1f}%)"
         )
-        return True
+        return True, original_size, output_size
 
     except Exception as e:
         log(f"  [Error] Conversion failed: {e}")
-        return False
+        return False, 0, 0
 
     finally:
         tmp_output.unlink(missing_ok=True)
@@ -582,6 +582,8 @@ def process_library(library_dir: Path, threads: int, crf: int,
 
     converted = skipped = failed = 0
     consecutive_failures = 0
+    total_original_bytes = 0
+    total_output_bytes = 0
 
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -609,12 +611,16 @@ def process_library(library_dir: Path, threads: int, crf: int,
                     log("  [Error] Could not prepare file.")
                     failed += 1
                     consecutive_failures += 1
-                elif convert_to_av1(file_path, local, threads, crf, preset):
-                    converted += 1
-                    consecutive_failures = 0
                 else:
-                    failed += 1
-                    consecutive_failures += 1
+                    success, orig_sz, out_sz = convert_to_av1(file_path, local, threads, crf, preset)
+                    if success:
+                        converted += 1
+                        consecutive_failures = 0
+                        total_original_bytes += orig_sz
+                        total_output_bytes += out_sz
+                    else:
+                        failed += 1
+                        consecutive_failures += 1
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     log(f"[Error] {consecutive_failures} failures in a row; aborting this task "
@@ -625,6 +631,13 @@ def process_library(library_dir: Path, threads: int, crf: int,
 
     log("=" * 60)
     log(f"Done. converted={converted} skipped={skipped} failed={failed}")
+    if converted > 0 and total_original_bytes > 0:
+        saved_bytes = total_original_bytes - total_output_bytes
+        overall_pct = (100 * total_output_bytes / total_original_bytes)
+        log(
+            f"Total library reduction: {fmt_size(total_original_bytes)} -> {fmt_size(total_output_bytes)} "
+            f"({overall_pct:.1f}%), saved {fmt_size(saved_bytes)}"
+        )
 
 
 # --------------------------------------------------------------------------- #
