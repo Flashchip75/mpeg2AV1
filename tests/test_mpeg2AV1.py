@@ -498,6 +498,41 @@ def test_process_library_counts_and_cleans_scratch(monkeypatch, tmp_path, capsys
 # Integration test with real ffmpeg (auto-skipped if unavailable)
 # --------------------------------------------------------------------------- #
 
+def test_process_library_circuit_breaker(monkeypatch, tmp_path):
+    # Setup dummy video files
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    for i in range(5):
+        (lib_dir / f"video{i}.mkv").write_bytes(b"MPEG2")
+
+    # Mock file discovery to return our files
+    monkeypatch.setattr(m, "find_mkv_files", lambda d: sorted(list(lib_dir.glob("*.mkv"))))
+    
+    # Mock staging/preparation to always succeed
+    monkeypatch.setattr(m, "prepare", lambda idx, path, scratch: ("success", {"codec_name": "mpeg2video"}, path))
+    
+    # Mock convert_to_av1 to always fail
+    monkeypatch.setattr(m, "convert_to_av1", lambda f, l, t, c, p: False)
+    
+    # Track how many times convert_to_av1 was called
+    call_count = 0
+    orig_convert = m.convert_to_av1
+    def counting_convert(f, l, t, c, p):
+        nonlocal call_count
+        call_count += 1
+        return orig_convert(f, l, t, c, p)
+    monkeypatch.setattr(m, "convert_to_av1", counting_convert)
+
+    # Run process_library with a single task (TASK_ID=0, TOTAL_TASKS=1)
+    monkeypatch.setattr(m, "TASK_ID", 0)
+    monkeypatch.setattr(m, "TOTAL_TASKS", 1)
+
+    m.process_library(lib_dir, threads=4, crf=24, preset=5, dry_run=False)
+
+    # Since MAX_CONSECUTIVE_FAILURES is 3, it should abort after 3 failures
+    # instead of trying all 5 files.
+    assert call_count == m.MAX_CONSECUTIVE_FAILURES
+
 def _ffmpeg_has_encoders(*names):
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
         return False

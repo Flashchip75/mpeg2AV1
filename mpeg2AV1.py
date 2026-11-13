@@ -38,6 +38,8 @@ THREADS_RANGE = (1, 1024)
 CRF_RANGE = (0, 63)
 PRESET_RANGE = (0, 13)
 
+MAX_CONSECUTIVE_FAILURES = 3
+
 # State needed by the signal handler
 active_ffmpeg_proc: subprocess.Popen | None = None
 active_tmp_output: Path | None = None
@@ -579,6 +581,8 @@ def process_library(library_dir: Path, threads: int, crf: int,
     vlog(f"scratch free: {fmt_size(shutil.disk_usage(scratch).free)}")
 
     converted = skipped = failed = 0
+    consecutive_failures = 0
+
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(prepare, 0, my_files[0], scratch)
@@ -600,13 +604,22 @@ def process_library(library_dir: Path, threads: int, crf: int,
                     codec = meta.get("codec_name", "unknown") if meta else "unknown"
                     log(f"  Skipping: codec is {codec}.")
                     skipped += 1
+                    consecutive_failures = 0
                 elif status == "failed" or local is None:
                     log("  [Error] Could not prepare file.")
                     failed += 1
+                    consecutive_failures += 1
                 elif convert_to_av1(file_path, local, threads, crf, preset):
                     converted += 1
+                    consecutive_failures += 1
                 else:
                     failed += 1
+                    consecutive_failures += 1
+
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    log(f"[Error] {consecutive_failures} failures in a row; aborting this task "
+                        f"(probably a systematic problem).")
+                    break
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -639,6 +652,15 @@ def int_in_range(lo: int, hi: int):
         return n
     return check
 
+def preflight() -> None:
+        for tool in ("ffmpeg", "ffprobe"):
+            if shutil.which(tool) is None:
+                sys.exit(f"{tool} not found in PATH")
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                            capture_output=True, text=True).stdout
+        if "libsvtav1" not in out:
+            sys.exit("This ffmpeg build has no libsvtav1 encoder")
+
 def main() -> None:
     global VERBOSE
 
@@ -659,6 +681,8 @@ def main() -> None:
         help="Detailed output (commands, paths, slot waits, timings)",
     )
     args = ap.parse_args()
+
+    preflight()
 
     VERBOSE = args.verbose
 
