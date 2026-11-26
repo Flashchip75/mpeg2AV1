@@ -93,18 +93,25 @@ def graceful_exit(signum, frame):
 
     proc = active_ffmpeg_proc
     if proc and proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
         proc.terminate()
         try:
             proc.wait(timeout=60)
         except subprocess.TimeoutExpired:
             log("FFmpeg didn't exit in time. Forcing kill...")
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             proc.wait()
 
     cleanup_active()
 
     log("Clean exit. Original file untouched.")
-    # Exit immediately after cleaning up the active FFmpeg process.
     os._exit(128 + signum)
 
 
@@ -194,9 +201,13 @@ def run_ffmpeg_with_progress(cmd: list[str], total_dur: float) -> int:
     global active_ffmpeg_proc
 
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, text=True, bufsize=1,
+        cmd,
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
     )
-
+    
     active_ffmpeg_proc = proc
     assert proc.stdout is not None
 
@@ -275,16 +286,26 @@ def verify_output(output: Path, original_duration: float) -> bool:
         "-map", "0:v:0",
         "-f", "null", "-",
     ]
+    proc: subprocess.Popen[str] | None = None
     try:
-        res = subprocess.run(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
-        if res.returncode != 0:
-            log(f"  [Error] Decode verification failed: {res.stderr[-1000:]}")
+        active_ffmpeg_proc = proc
+        _, stderr = proc.communicate()
+        if proc.returncode != 0:
+            log(f"  [Error] Decode verification failed: {(stderr or '')[-1000:]}")
             return False
     except Exception as e:
         log(f"  [Error] Verification failed: {e}")
         return False
+    finally:
+        if active_ffmpeg_proc is proc:
+            active_ffmpeg_proc = None
 
     log(f"  Verification successful. Duration difference: {difference:.3f}s")
     return True
