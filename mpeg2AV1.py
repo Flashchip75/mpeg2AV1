@@ -223,31 +223,6 @@ def run_ffmpeg_with_progress(cmd: list[str], total_dur: float) -> int:
     active_ffmpeg_proc = None
     return rc
 
-def sha256_file(path: Path, chunk_size: Optional[int] = None) -> str:
-    """Calculate SHA-256 without loading the entire file into memory.
-    
-    If chunk_size is not specified, dynamically determines the optimal size 
-    based on the filesystem's preferred I/O block size (st_blksize).
-    """
-    digest = hashlib.sha256()
-
-    if chunk_size is None:
-        try:
-            # st_blksize gives the filesystem's optimal block size (e.g., 4KB, 128KB, etc.)
-            # We scale it up or enforce a minimum floor (1 MB) to keep Python loop 
-            # overhead low while matching hardware I/O boundaries.
-            stat = path.stat()
-            io_block = getattr(stat, "st_blksize", 1048576)
-            chunk_size = max(io_block, 1048576)  # At least 1 MB
-        except (AttributeError, OSError):
-            chunk_size = 1048576  # Fallback to 1 MB if stat fails
-
-    with path.open("rb") as f:
-        while chunk := f.read(chunk_size):
-            digest.update(chunk)
-
-    return digest.hexdigest()
-
 def verify_output(output: Path, original_duration: float) -> bool:
     """Verify the encoded file before it replaces the original."""
     log("  Verifying output...")
