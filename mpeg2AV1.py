@@ -25,7 +25,7 @@ TOTAL_TASKS = int(os.environ.get("SLURM_NTASKS", 1))
 JOB_ID = os.environ.get("SLURM_JOB_ID", "manual")
 NODE = os.environ.get("SLURMD_NODENAME", "local")
 
-DOWNLOAD_SLOTS_PER_NODE = 1
+DOWNLOAD_SLOTS_PER_NODE = 2
 PROGRESS_INTERVAL = 60       # seconds between progress lines
 SCRATCH_ROOT = Path("/tmp")
 SKIP_MARKERS = ("_temp", "_debug", "_av1_test")
@@ -323,8 +323,7 @@ def verify_output(output: Path, original_duration: float) -> bool:
     return True
 
 
-def convert_to_av1(file_path: Path, local_input: Path,
-                   threads: int, crf: int, preset: int, expected_sha256: str) -> tuple[bool, int, int]:
+def convert_to_av1(file_path: Path, threads: int, crf: int, preset: int) -> tuple[bool, int, int]:
     """Encode an already-staged file and atomically replace the original."""
     global active_tmp_output
 
@@ -332,12 +331,12 @@ def convert_to_av1(file_path: Path, local_input: Path,
     active_tmp_output = tmp_output
 
     try:
-        total_dur = get_video_duration(local_input)
+        total_dur = get_video_duration(file_path)
         if total_dur <= 0:
             log("  [Error] Invalid input duration.")
             return False, 0 ,0
 
-        cmd = build_ffmpeg_cmd(local_input, tmp_output, threads, crf, preset)
+        cmd = build_ffmpeg_cmd(file_path, tmp_output, threads, crf, preset)
         log(f"  Encoding MPEG-2 to AV1 (CRF={crf}, preset={preset}, threads={threads})")
         vlog(f"ffmpeg: {' '.join(cmd)}")
 
@@ -351,10 +350,6 @@ def convert_to_av1(file_path: Path, local_input: Path,
         if not verify_output(tmp_output, total_dur):
             log("  [Error] Verification failed. Original kept.")
             return False, 0 ,0
-
-        if sha256_file(file_path) != expected_sha256:
-            log("  [Error] Original changed since staging. Original kept.")
-            return False, 0, 0
 
         original_size = file_path.stat().st_size
         output_size = tmp_output.stat().st_size
@@ -375,8 +370,6 @@ def convert_to_av1(file_path: Path, local_input: Path,
 
     finally:
         tmp_output.unlink(missing_ok=True)
-        local_input.unlink(missing_ok=True)
-        active_staged.discard(local_input)
         active_tmp_output = None
 
 
@@ -613,55 +606,46 @@ def process_library(library_dir: Path, threads: int, crf: int,
 
     t_start = time.time()
 
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(prepare, 0, my_files[0], scratch)
+    for i, file_path in enumerate(my_files, 1):
+        log_file_header(i, len(my_files), file_path, library_dir)
 
-            for i, file_path in enumerate(my_files):
-                status, meta, local = fut.result()
+        meta = probe_video(file_path)
 
-                # Start staging the next file BEFORE encoding this one
-                if i + 1 < len(my_files):
-                    vlog(f"queueing prefetch of {my_files[i + 1].name}")
-                    fut = pool.submit(prepare, i + 1, my_files[i + 1], scratch)
+        if meta is None:
+            log("  [Error] Could not inspect video stream.")
+            failed += 1
+            consecutive_failures += 1
 
-                log_file_header(i + 1, len(my_files), file_path, library_dir)
+        else:
+            log_metadata(meta)
 
-                if meta:
-                    log_metadata(meta)
+            codec = meta.get("codec_name", "unknown")
 
-                if status == "skipped":
-                    codec = meta.get("codec_name", "unknown") if meta else "unknown"
-                    log(f"  Skipping: codec is {codec}.")
-                    skipped += 1
+            if codec != "mpeg2video":
+                log(f"  Skipping: codec is {codec}.")
+                skipped += 1
+                consecutive_failures = 0
+
+            else:
+                success, orig_sz, out_sz = convert_to_av1(
+                    file_path, threads, crf, preset
+                )
+
+                if success:
+                    converted += 1
                     consecutive_failures = 0
-                elif status == "failed" or local is None or meta is None:
-                    log("  [Error] Could not prepare file.")
+                    total_original_bytes += orig_sz
+                    total_output_bytes += out_sz
+                else:
                     failed += 1
                     consecutive_failures += 1
-                else:
-                    expected_sha256 = meta["_staged_sha256"]
-                    if "_staged_sha256" not in meta:
-                        log("  [Error] Missing staged SHA-256 hash.")
-                        failed += 1
-                        consecutive_failures += 1
-                        continue
-                    success, orig_sz, out_sz = convert_to_av1(file_path, local, threads, crf, preset, expected_sha256)
-                    if success:
-                        converted += 1
-                        consecutive_failures = 0
-                        total_original_bytes += orig_sz
-                        total_output_bytes += out_sz
-                    else:
-                        failed += 1
-                        consecutive_failures += 1
 
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    log(f"[Error] {consecutive_failures} failures in a row; aborting this task "
-                        f"(probably a systematic problem).")
-                    break
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            log(
+                f"[Error] {consecutive_failures} failures in a row; "
+                "aborting this task (probably a systematic problem)."
+            )
+            break
 
     elapsed = time.time() - t_start
 
