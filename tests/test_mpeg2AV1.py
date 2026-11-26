@@ -89,6 +89,27 @@ def test_build_ffmpeg_cmd_without_release_year():
     assert "-metadata" not in cmd
     assert cmd[-1] == "output.mkv"
 
+class DummyPopen:
+    def __init__(self, returncode=0, stderr=""):
+        self.returncode = returncode
+        self._stderr = stderr
+        self.pid = 12345
+
+    def communicate(self):
+        return ("", self._stderr)
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+
+    def kill(self):
+        self.returncode = -9
+
 
 # --------------------------------------------------------------------------- #
 # File discovery
@@ -268,7 +289,7 @@ def test_verify_rejects_decode_errors(monkeypatch, tmp_path):
     monkeypatch.setattr(m, "probe_video", lambda p: {"codec_name": "av1"})
     monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
     monkeypatch.setattr(
-        m.subprocess, "run", lambda *a, **k: completed(returncode=1, stderr="corrupt")
+        m.subprocess, "Popen", lambda *a, **k: DummyPopen(returncode=1, stderr="corrupt")
     )
     assert not m.verify_output(out, 100.0)
 
@@ -278,7 +299,7 @@ def test_verify_accepts_good_file(monkeypatch, tmp_path):
     out.write_bytes(b"x")
     monkeypatch.setattr(m, "probe_video", lambda p: {"codec_name": "av1"})
     monkeypatch.setattr(m, "get_video_duration", lambda p: 100.5)
-    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: completed())
+    monkeypatch.setattr(m.subprocess, "Popen", lambda *a, **k: DummyPopen(returncode=0))
     assert m.verify_output(out, 100.0)
 
 
