@@ -244,22 +244,13 @@ def test_verify_accepts_good_file(monkeypatch, tmp_path):
 # convert_to_av1 (encode + verify + replace)
 # --------------------------------------------------------------------------- #
 
-@pytest.fixture
-def staged(tmp_path):
-    original = tmp_path / "ep.mkv"
-    original.write_bytes(b"MPEG2" * 100)
-    local = tmp_path / "scratch" / "0_ep.mkv"
-    local.parent.mkdir()
-    local.write_bytes(b"copy")
-    return original, local
 
-
-def fake_encoder(rc=0):
+def fake_encoder(rc=0, output=b"AV1"):
     """Stand-in for run_ffmpeg_with_progress: writes the output file."""
 
     def _run(cmd, total_dur):
         if rc == 0:
-            Path(cmd[-1]).write_bytes(b"AV1")
+            Path(cmd[-1]).write_bytes(output)
         return rc
 
     return _run
@@ -279,6 +270,29 @@ def test_convert_success_replaces_original(monkeypatch, original_video):
     assert not m.tmp_output_path(original).exists()
     assert m.active_tmp_output is None
 
+def test_convert_larger_output_keeps_original(monkeypatch, original_video):
+    original = original_video
+
+    monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
+    monkeypatch.setattr(
+        m, "run_ffmpeg_with_progress",
+        fake_encoder(output=b"AV1" * 300)  # Larger than original
+    )
+    monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
+
+    success, original_size, output_size = m.convert_to_av1(
+        original, 4, 24, 5
+    )
+
+    assert not success
+    assert output_size > original_size
+
+    # Original MPEG-2 file must remain untouched
+    assert original.read_bytes() == b"MPEG2" * 100
+
+    # Temporary AV1 output must be cleaned up
+    assert not m.tmp_output_path(original).exists()
+    assert m.active_tmp_output is None
 
 @pytest.mark.parametrize(
     "duration, rc, verified",
