@@ -167,6 +167,9 @@ def extract_release_year(file_path: Path) -> str | None:
 
 def build_ffmpeg_cmd(local_input: Path, tmp_output: Path, 
                      threads: int, crf: int, preset: int) -> list[str]:
+
+    threads = min(6, max(0, threads))
+    
     cmd = [
         "ffmpeg", "-y", "-nostdin", "-nostats",
         "-loglevel", "warning",
