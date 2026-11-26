@@ -165,8 +165,8 @@ def test_preset_range(value, ok):
             check(value)
 
 @pytest.mark.parametrize("value, ok", [
-    ("1", True), ("10", True), ("1024", True),
-    ("0", False), ("-1", False), ("1025", False), ("2.5", False), ("many", False),
+    ("0", True), ("1", True), ("6", True),
+    ("-1", False), ("7", False), ("2.5", False), ("many", False),
 ])
 def test_threads_range(value, ok):
     check = m.int_in_range(*m.THREADS_RANGE)
@@ -177,7 +177,7 @@ def test_threads_range(value, ok):
             check(value)
 
 
-@pytest.mark.parametrize("bad", ["0", "-4", "1025", "9223372036854775807", "2.5", "many"])
+@pytest.mark.parametrize("bad", ["-4", "7", "9223372036854775807", "2.5", "many"])
 def test_main_rejects_bad_threads_before_any_work(monkeypatch, tmp_path, capsys, bad):
     """--threads must be validated at parse time, before any file is touched."""
     monkeypatch.setattr(sys, "argv", ["prog", str(tmp_path), "--threads", bad])
@@ -460,7 +460,7 @@ def test_process_library_circuit_breaker(monkeypatch, tmp_path):
 
     m.process_library(
         lib_dir,
-        threads=4,
+        threads=6,
         crf=24,
         preset=5,
         dry_run=False
@@ -500,7 +500,7 @@ def test_end_to_end_conversion(tmp_path):
     assert meta is not None, "ffprobe failed to read the generated file. Check if ffmpeg/ffprobe is installed and supports mpeg2video."
     assert meta["codec_name"] == "mpeg2video"
 
-    m.process_library(lib, threads=2, crf=40, preset=12, dry_run=False)
+    m.process_library(lib, threads=0, crf=40, preset=12, dry_run=False)
 
     final_meta = m.probe_video(src)
     assert final_meta is not None, "ffprobe failed to read the converted AV1 file."
