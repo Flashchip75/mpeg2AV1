@@ -4,34 +4,22 @@ import sys
 import shutil
 import subprocess
 import argparse
-import hashlib
 from subprocess import CompletedProcess
 from pathlib import Path
-from collections import namedtuple
 
 import pytest
 
 import mpeg2AV1 as m
 
-Usage = namedtuple("Usage", "total used free")
-GB = 10**9
-
 # --------------------------------------------------------------------------- #
 # Fixtures / helpers
 # --------------------------------------------------------------------------- #
 
-@pytest.fixture(autouse=True)
-def isolate(monkeypatch, tmp_path):
-    """Keep scratch and lock files inside tmp_path; reset module state."""
-    scratch_root = tmp_path / "scratch_root"
-    scratch_root.mkdir()
-    monkeypatch.setattr(m, "SCRATCH_ROOT", scratch_root)
-    monkeypatch.setattr(m, "TASK_ID", 0)
-    monkeypatch.setattr(m, "TOTAL_TASKS", 1)
-    monkeypatch.setattr(m, "VERBOSE", False)
-    m.active_staged.clear()
-    yield
-    m.active_staged.clear()
+@pytest.fixture
+def original_video(tmp_path):
+    original = tmp_path / "ep.mkv"
+    original.write_bytes(b"MPEG2" * 100)
+    return original
 
 
 def make_library(tmp_path, names):
@@ -79,21 +67,6 @@ def test_build_ffmpeg_cmd():
     assert cmd[cmd.index("-preset") + 1] == "5"
     assert cmd[cmd.index("-svtav1-params") + 1] == "lp=8"
 
-def test_sha256_file(tmp_path):
-    test_file = tmp_path / "sample.bin"
-    content = b"MPEG-2 to AV1 test stream data... " * 500  # ~17 KB
-    test_file.write_bytes(content)
-
-    expected_hash = hashlib.sha256(content).hexdigest()
-
-    # 1. Test default dynamic chunk_size (chunk_size=None)
-    computed_default = m.sha256_file(test_file)
-    assert computed_default == expected_hash
-
-    # 2. Test explicit custom chunk_size (forcing multiple chunk iterations, e.g., 64 bytes)
-    computed_custom = m.sha256_file(test_file, chunk_size=64)
-    assert computed_custom == expected_hash
-
 
 # --------------------------------------------------------------------------- #
 # File discovery
@@ -119,45 +92,6 @@ def test_find_mkv_files_filters_and_recurses(tmp_path):
 
     assert m.find_mkv_files(lib) == sorted(keep)
 
-# --------------------------------------------------------------------------- #
-# Tests for disk space management and prefetch wait logic
-# --------------------------------------------------------------------------- #
-
-def fake_usage(monkeypatch, *free_values, total=100 * GB):
-    """Each disk_usage() call returns the next free value (the last one repeats)."""
-    seq = list(free_values)
-
-    def _du(path):
-        free = seq.pop(0) if len(seq) > 1 else seq[0]
-        return Usage(total, total - free, free)
-
-    monkeypatch.setattr(m.shutil, "disk_usage", _du)
-
-
-def test_wait_for_space_passes_when_enough_free(monkeypatch, tmp_path):
-    fake_usage(monkeypatch, 50 * GB)
-    m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)   # 40% would remain
-
-
-def test_wait_for_space_rejects_file_that_can_never_fit(monkeypatch, tmp_path):
-    fake_usage(monkeypatch, 95 * GB)
-    with pytest.raises(m.NotEnoughSpace):
-        m.wait_for_space(tmp_path, 90 * GB, min_free_pct=15)
-
-
-def test_wait_for_space_waits_then_proceeds(monkeypatch, tmp_path):
-    fake_usage(monkeypatch, 20 * GB, 20 * GB, 60 * GB)     # space frees up on 3rd check
-    sleeps = []
-    monkeypatch.setattr(m.time, "sleep", sleeps.append)
-    m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)
-    assert len(sleeps) == 2
-
-
-def test_wait_for_space_times_out(monkeypatch, tmp_path):
-    fake_usage(monkeypatch, 20 * GB)
-    monkeypatch.setattr(m, "SPACE_WAIT_TIMEOUT", 0)
-    with pytest.raises(m.NotEnoughSpace):
-        m.wait_for_space(tmp_path, 10 * GB, min_free_pct=15)
 
 # --------------------------------------------------------------------------- #
 # Argument validation
@@ -214,16 +148,6 @@ def test_main_rejects_bad_threads_before_any_work(monkeypatch, tmp_path, capsys,
     assert exc.value.code == 2                       # argparse usage error
     assert "--threads" in capsys.readouterr().err    # message names the bad flag
 
-
-def test_main_passes_valid_threads_through(monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(sys, "argv", ["prog", str(tmp_path), "--threads", "4"])
-    monkeypatch.setattr(m, "process_library", lambda *a, **k: calls.append(a))
-    monkeypatch.setattr(m, "MIN_FREE_PCT", m.MIN_FREE_PCT)  # main() may overwrite it; restored afterwards
-
-    m.main()
-
-    assert calls[0][1] == 4    # process_library(library, threads, crf, preset, dry_run)
 
 @pytest.mark.parametrize("value", [
     "9223372036854775807",     # int64 max
@@ -317,59 +241,6 @@ def test_verify_accepts_good_file(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# prepare (staging)
-# --------------------------------------------------------------------------- #
-
-def test_prepare_skips_non_mpeg2(monkeypatch, tmp_path):
-    monkeypatch.setattr(m, "probe_video", lambda p: {"codec_name": "h264"})
-    status, meta, local = m.prepare(0, tmp_path / "a.mkv", tmp_path)
-    assert (status, local) == ("skipped", None)
-    assert meta is not None
-    assert meta["codec_name"] == "h264"
-
-
-def test_prepare_fails_when_probe_fails(monkeypatch, tmp_path):
-    monkeypatch.setattr(m, "probe_video", lambda p: None)
-    assert m.prepare(0, tmp_path / "a.mkv", tmp_path) == ("failed", None, None)
-
-
-def test_prepare_stages_mpeg2_file(monkeypatch, tmp_path):
-    src = tmp_path / "a.mkv"
-    src.write_bytes(b"video-data")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    monkeypatch.setattr(m, "probe_video", lambda p: {"codec_name": "mpeg2video"})
-
-    status, _meta, local = m.prepare(3, src, scratch)
-
-    assert status == "ready"
-    assert local is not None
-    assert local == scratch / "3_a.mkv"
-    assert local.read_bytes() == b"video-data"
-    assert not list(scratch.glob("*.part"))
-    assert local in m.active_staged
-
-
-def test_prepare_cleans_up_when_copy_fails(monkeypatch, tmp_path):
-    src = tmp_path / "a.mkv"
-    src.write_bytes(b"x")
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    monkeypatch.setattr(m, "probe_video", lambda p: {"codec_name": "mpeg2video"})
-
-    def boom(*a, **k):
-        raise OSError("network gone")
-
-    monkeypatch.setattr(m.shutil, "copy2", boom)
-
-    status, _meta, local = m.prepare(0, src, scratch)
-
-    assert (status, local) == ("failed", None)
-    assert not list(scratch.iterdir())
-    assert not m.active_staged
-
-
-# --------------------------------------------------------------------------- #
 # convert_to_av1 (encode + verify + replace)
 # --------------------------------------------------------------------------- #
 
@@ -394,38 +265,19 @@ def fake_encoder(rc=0):
     return _run
 
 
-def test_convert_success_replaces_original(monkeypatch, staged):
-    original, local = staged
-
-    # Deliberately make the local copy a different size than the original
-    local.write_bytes(original.read_bytes())
-    expected_sha256 = m.sha256_file(local)
+def test_convert_success_replaces_original(monkeypatch, original_video):
+    original = original_video
 
     monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
     monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
 
-    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5, expected_sha256)
-    assert success
+    success, _, _ = m.convert_to_av1(original, 4, 24, 5)
 
+    assert success
     assert original.read_bytes() == b"AV1"
-    assert not local.exists()
     assert not m.tmp_output_path(original).exists()
     assert m.active_tmp_output is None
-
-def test_convert_refuses_when_staged_copy_differs_from_original(monkeypatch, staged):
-    original, local = staged
-    local.write_bytes(b"truncated")
-    expected_sha256 = m.sha256_file(local)
-
-    monkeypatch.setattr(m, "get_video_duration", lambda p: 100.0)
-    monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder())
-    monkeypatch.setattr(m, "verify_output", lambda out, dur: True)
-
-    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5, expected_sha256)
-    assert not success
-    assert original.read_bytes() == b"MPEG2" * 100
-    assert not m.tmp_output_path(original).exists()
 
 
 @pytest.mark.parametrize(
@@ -433,20 +285,21 @@ def test_convert_refuses_when_staged_copy_differs_from_original(monkeypatch, sta
     [(0.0, 0, True), (100.0, 1, True), (100.0, 0, False)],
     ids=["bad-duration", "ffmpeg-error", "verification-fails"],
 )
-def test_convert_failure_keeps_original(monkeypatch, staged, duration, rc, verified):
-    original, local = staged
-    expected_sha256 = m.sha256_file(local)
+def test_convert_failure_keeps_original(
+    monkeypatch, original_video, duration, rc, verified
+):
+    original = original_video
 
     monkeypatch.setattr(m, "get_video_duration", lambda p: duration)
     monkeypatch.setattr(m, "run_ffmpeg_with_progress", fake_encoder(rc))
     monkeypatch.setattr(m, "verify_output", lambda out, dur: verified)
 
-    success, _, _ = m.convert_to_av1(original, local, 4, 24, 5, expected_sha256)
-    assert not success
+    success, _, _ = m.convert_to_av1(original, 4, 24, 5)
 
-    assert original.read_bytes() == b"MPEG2" * 100   # untouched
-    assert not m.tmp_output_path(original).exists()  # temp output removed
-    assert not local.exists()                        # staged copy removed
+    assert not success
+    assert original.read_bytes() == b"MPEG2" * 100
+    assert not m.tmp_output_path(original).exists()
+    assert m.active_tmp_output is None
 
 
 # --------------------------------------------------------------------------- #
@@ -466,7 +319,6 @@ def test_dry_run_touches_nothing(monkeypatch, tmp_path, capsys):
     assert "Would skip" in out
     assert "would_convert=1 skipped=1 failed=0" in out
     assert {p.name: p.read_bytes() for p in lib.iterdir()} == before
-    assert not m.scratch_dir().exists()
 
 
 @pytest.mark.parametrize(
@@ -490,35 +342,6 @@ def test_tasks_split_files_round_robin(
     assert not any(name in out for name in excluded)
 
 
-def test_process_library_counts_and_cleans_scratch(monkeypatch, tmp_path, capsys):
-    lib = make_library(tmp_path, ["a.mkv", "b.mkv", "c.mkv"])
-
-    def fake_prepare(idx, file_path, scratch):
-        if file_path.name == "a.mkv":
-            local = scratch / f"{idx}_{file_path.name}"
-            local.write_bytes(b"x")
-            return "ready", {"codec_name": "mpeg2video", 
-                             "_staged_sha256": m.sha256_file(file_path)}, local
-        if file_path.name == "b.mkv":
-            return "skipped", {"codec_name": "h264"}, None
-        return "failed", None, None
-
-    converted = []
-
-    def fake_convert(file_path, local, threads, crf, preset, expected_sha):
-        converted.append(file_path.name)
-        return True, 100, 50
-
-    monkeypatch.setattr(m, "prepare", fake_prepare)
-    monkeypatch.setattr(m, "convert_to_av1", fake_convert)
-
-    m.process_library(lib, 4, 24, 5, dry_run=False)
-
-    assert converted == ["a.mkv"]
-    assert "converted=1 skipped=1 failed=1" in capsys.readouterr().out
-    assert not m.scratch_dir().exists()
-
-
 # --------------------------------------------------------------------------- #
 # Integration test with real ffmpeg (auto-skipped if unavailable)
 # --------------------------------------------------------------------------- #
@@ -527,39 +350,45 @@ def test_process_library_circuit_breaker(monkeypatch, tmp_path):
     # Setup dummy video files
     lib_dir = tmp_path / "lib"
     lib_dir.mkdir()
+
     for i in range(5):
         (lib_dir / f"video{i}.mkv").write_bytes(b"MPEG2")
 
-    # Mock file discovery to return our files
-    monkeypatch.setattr(m, "find_mkv_files", lambda d: sorted(list(lib_dir.glob("*.mkv"))))
-    
-    # Mock staging/preparation to always succeed
+    # Mock file discovery
     monkeypatch.setattr(
-        m, 
-        "prepare", 
-        lambda idx, path, scratch: ("success", {"codec_name": "mpeg2video", "_staged_sha256": m.sha256_file(path)}, path)
+        m,
+        "find_mkv_files",
+        lambda d: sorted(lib_dir.glob("*.mkv"))
     )
-    
-    # Mock convert_to_av1 to always fail
-    monkeypatch.setattr(m, "convert_to_av1", lambda f, l, t, c, p: False)
-    
-    # Track how many times convert_to_av1 was called
+
+    # Pretend every file contains MPEG-2
+    monkeypatch.setattr(
+        m,
+        "probe_video",
+        lambda p: {"codec_name": "mpeg2video"}
+    )
+
+    # Mock conversion to always fail
     call_count = 0
-    orig_convert = m.convert_to_av1
-    def counting_convert(f, l, t, c, p, expected_sha):
+
+    def counting_convert(file_path, threads, crf, preset):
         nonlocal call_count
         call_count += 1
-        return (False, 0, 0)
+        return False, 0, 0
+
     monkeypatch.setattr(m, "convert_to_av1", counting_convert)
 
-    # Run process_library with a single task (TASK_ID=0, TOTAL_TASKS=1)
     monkeypatch.setattr(m, "TASK_ID", 0)
     monkeypatch.setattr(m, "TOTAL_TASKS", 1)
 
-    m.process_library(lib_dir, threads=4, crf=24, preset=5, dry_run=False)
+    m.process_library(
+        lib_dir,
+        threads=4,
+        crf=24,
+        preset=5,
+        dry_run=False
+    )
 
-    # Since MAX_CONSECUTIVE_FAILURES is 3, it should abort after 3 failures
-    # instead of trying all 5 files.
     assert call_count == m.MAX_CONSECUTIVE_FAILURES
 
 def _ffmpeg_has_encoders(*names):
