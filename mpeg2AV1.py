@@ -27,7 +27,7 @@ SKIP_MARKERS = ("_temp", "_debug", "_av1_test")
 
 VERBOSE = False
 
-THREADS_RANGE = (1, 1024)
+THREADS_RANGE = (0, 6)
 CRF_RANGE = (0, 63)
 PRESET_RANGE = (0, 13)
 
