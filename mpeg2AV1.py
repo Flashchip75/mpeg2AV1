@@ -382,7 +382,6 @@ def dry_run_library(library_dir: Path, my_files: list[Path], threads: int,
 
     would_convert = skipped = failed = 0
     total_bytes = 0
-    largest = 0
 
     for i, file_path in enumerate(my_files, 1):
         log_file_header(i, len(my_files), file_path, library_dir)
@@ -530,13 +529,13 @@ def int_in_range(lo: int, hi: int):
     return check
 
 def preflight() -> None:
-        for tool in ("ffmpeg", "ffprobe"):
-            if shutil.which(tool) is None:
-                sys.exit(f"{tool} not found in PATH")
-        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
-                            capture_output=True, text=True).stdout
-        if "libsvtav1" not in out:
-            sys.exit("This ffmpeg build has no libsvtav1 encoder")
+    for tool in ("ffmpeg", "ffprobe"):
+        if shutil.which(tool) is None:
+            sys.exit(f"{tool} not found in PATH")
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                        capture_output=True, text=True).stdout
+    if "libsvtav1" not in out:
+        sys.exit("This ffmpeg build has no libsvtav1 encoder")
 
 def main() -> None:
     global VERBOSE
