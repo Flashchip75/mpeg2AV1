@@ -9,9 +9,6 @@ import signal
 import subprocess
 import sys
 import time
-import hashlib
-from typing import Optional
-from contextlib import contextmanager
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
@@ -24,7 +21,6 @@ JOB_ID = os.environ.get("SLURM_JOB_ID", "manual")
 NODE = os.environ.get("SLURMD_NODENAME", "local")
 
 PROGRESS_INTERVAL = 60       # seconds between progress lines
-SCRATCH_ROOT = Path("/tmp")
 SKIP_MARKERS = ("_temp", "_debug", "_av1_test")
 
 VERBOSE = False
@@ -74,19 +70,9 @@ def fmt_size(n: float) -> str:
 # Paths
 # --------------------------------------------------------------------------- #
 
-def scratch_dir() -> Path:
-    """Return the job- and task-specific scratch directory path."""
-    return SCRATCH_ROOT / f"mpeg2_av1_{JOB_ID}_t{TASK_ID}"
-
-
 def tmp_output_path(file_path: Path) -> Path:
     """Generate a temporary output file path on the same filesystem for atomic replacement."""
     return file_path.with_name(f".{file_path.stem}_av1_{JOB_ID}_t{TASK_ID}.mkv")
-
-
-def staged_path(scratch: Path, idx: int, file_path: Path) -> Path:
-    """Return the local scratch staging path for a video file."""
-    return scratch / f"{idx}_{file_path.name}"
 
 
 # --------------------------------------------------------------------------- #
@@ -94,13 +80,13 @@ def staged_path(scratch: Path, idx: int, file_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 def cleanup_active() -> None:
-    """Remove any active temporary files and staged scratch files."""
+    """Remove any active temporary files."""
     if active_tmp_output is not None:
         active_tmp_output.unlink(missing_ok=True)
 
 
 def graceful_exit(signum, frame):
-    """Handle termination signals, safely stop FFmpeg, clean up scratch files, and exit."""
+    """Stop FFmpeg, clean up temporary output, and exit."""
     log(f"Caught signal {signum}. Stopping FFmpeg...")
 
     proc = active_ffmpeg_proc
@@ -282,7 +268,10 @@ def verify_output(output: Path, original_duration: float) -> bool:
 
     difference = abs(original_duration - new_duration)
     vlog(f"duration: input {original_duration:.2f}s, output {new_duration:.2f}s")
-    if difference > 2.0:
+    
+    tolerance = max(0.5, original_duration * 0.01)
+
+    if difference > tolerance:
         log(
             f"  [Error] Duration mismatch: "
             f"{original_duration:.2f}s vs {new_duration:.2f}s."
@@ -344,7 +333,12 @@ def convert_to_av1(file_path: Path, threads: int, crf: int, preset: int) -> tupl
         output_size = tmp_output.stat().st_size
 
         # Atomic replacement: the original is only replaced after verification
-        os.replace(tmp_output, file_path)
+        if output_size >= original_size:
+            log(
+                f"  Output is not smaller: {fmt_size(original_size)} -> "
+                f"{fmt_size(output_size)}. Keeping original."
+            )
+            return False, original_size, output_size
 
         log("  Success: original replaced with verified AV1 file.")
         log(
@@ -399,7 +393,6 @@ def dry_run_library(library_dir: Path, my_files: list[Path], threads: int,
     would_convert = skipped = failed = 0
     total_bytes = 0
     largest = 0
-    scratch = scratch_dir()
 
     for i, file_path in enumerate(my_files, 1):
         log_file_header(i, len(my_files), file_path, library_dir)
@@ -420,18 +413,15 @@ def dry_run_library(library_dir: Path, my_files: list[Path], threads: int,
 
         size = file_path.stat().st_size
         total_bytes += size
-        largest = max(largest, size)
         would_convert += 1
 
-        local = staged_path(scratch, i - 1, file_path)
         tmp_out = tmp_output_path(file_path)
         log(f"  Would convert ({fmt_size(size)}).")
-        vlog(f"would stage to:   {local}")
-        vlog(f"would encode to:  {tmp_out}")
-        vlog(f"would replace:    {file_path}")
+        vlog(f"would encode to: {tmp_out}")
+        vlog(f"would replace: {file_path}")
         vlog(
             "ffmpeg: "
-            + " ".join(build_ffmpeg_cmd(local, tmp_out, threads, crf, preset))
+            + " ".join(build_ffmpeg_cmd(file_path, tmp_out, threads, crf, preset))
         )
 
     log("=" * 60)
@@ -439,16 +429,7 @@ def dry_run_library(library_dir: Path, my_files: list[Path], threads: int,
         f"Dry run done. would_convert={would_convert} "
         f"skipped={skipped} failed={failed}"
     )
-    log(f"Total data to download: {fmt_size(total_bytes)}")
-
-    # Scratch holds at most two staged files at once per task
-    free = shutil.disk_usage(SCRATCH_ROOT).free
-    log(
-        f"Scratch free in {SCRATCH_ROOT}: {fmt_size(free)} "
-        f"(peak need for this task ~{fmt_size(2 * largest)})"
-    )
-    if free < 2 * largest:
-        log("  [Warning] Scratch space may be too small for two staged files.")
+    log(f"Total input data to process: {fmt_size(total_bytes)}")
 
 
 def process_library(library_dir: Path, threads: int, crf: int, 
@@ -468,11 +449,6 @@ def process_library(library_dir: Path, threads: int, crf: int,
     if dry_run:
         dry_run_library(library_dir, my_files, threads, crf, preset)
         return
-
-    scratch = scratch_dir()
-    scratch.mkdir(parents=True, exist_ok=True)
-    vlog(f"scratch dir: {scratch}")
-    vlog(f"scratch free: {fmt_size(shutil.disk_usage(scratch).free)}")
 
     converted = skipped = failed = 0
     consecutive_failures = 0
@@ -529,11 +505,13 @@ def process_library(library_dir: Path, threads: int, crf: int,
     log(f"Total time elapsed: {fmt_secs(elapsed)}")
     
     saved_bytes = total_original_bytes - total_output_bytes
-    overall_pct = (100 * total_output_bytes / total_original_bytes) if total_original_bytes > 0 else 0.0
+    reduction_pct = (100 * saved_bytes / total_original_bytes if total_original_bytes > 0 else 0.0)
     log(
-        f"Total library reduction: {fmt_size(total_original_bytes)} -> {fmt_size(total_output_bytes)} "
-        f"({overall_pct:.1f}%), saved {fmt_size(saved_bytes)}"
-        )
+        f"Total converted: {fmt_size(total_original_bytes)} -> "
+        f"{fmt_size(total_output_bytes)} "
+        f"({reduction_pct:.1f}% reduction), "
+        f"saved {fmt_size(saved_bytes)}"
+    )
 
 
 # --------------------------------------------------------------------------- #
