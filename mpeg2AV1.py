@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -151,9 +152,14 @@ def get_video_duration(file_path: Path) -> float:
 # Encoding
 # --------------------------------------------------------------------------- #
 
+def extract_release_year(file_path: Path) -> str | None:
+    """Extract a four-digit release year from parentheses in the filename."""
+    match = re.search(r"\((\d{4})\)", file_path.stem)
+    return match.group(1) if match else None
+
 def build_ffmpeg_cmd(local_input: Path, tmp_output: Path, 
                      threads: int, crf: int, preset: int) -> list[str]:
-    return [
+    cmd = [
         "ffmpeg", "-y", "-nostdin", "-nostats",
         "-loglevel", "warning",
         "-progress", "pipe:1",
@@ -170,8 +176,15 @@ def build_ffmpeg_cmd(local_input: Path, tmp_output: Path,
         "-pix_fmt", "yuv420p10le",
         "-g", "250",
         "-svtav1-params", f"lp={threads}",
-        str(tmp_output),
     ]
+
+    release_year = extract_release_year(local_input)
+    if release_year:
+        cmd.extend(["-metadata", f"date={release_year}"])
+
+    cmd.append(str(tmp_output))
+
+    return cmd
 
 
 def run_ffmpeg_with_progress(cmd: list[str], total_dur: float) -> int:

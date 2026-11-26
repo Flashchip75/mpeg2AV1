@@ -67,6 +67,28 @@ def test_build_ffmpeg_cmd():
     assert cmd[cmd.index("-preset") + 1] == "5"
     assert cmd[cmd.index("-svtav1-params") + 1] == "lp=8"
 
+def test_build_ffmpeg_cmd_adds_release_year():
+    cmd = m.build_ffmpeg_cmd(
+        Path("The Matrix (1999).mkv"),
+        Path("output.mkv"),
+        8, 24, 5
+    )
+
+    assert "-metadata" in cmd
+    assert cmd[cmd.index("-metadata") + 1] == "date=1999"
+    assert cmd[-1] == "output.mkv"
+
+
+def test_build_ffmpeg_cmd_without_release_year():
+    cmd = m.build_ffmpeg_cmd(
+        Path("The Matrix.mkv"),
+        Path("output.mkv"),
+        8, 24, 5
+    )
+
+    assert "-metadata" not in cmd
+    assert cmd[-1] == "output.mkv"
+
 
 # --------------------------------------------------------------------------- #
 # File discovery
@@ -158,6 +180,26 @@ def test_main_rejects_bad_threads_before_any_work(monkeypatch, tmp_path, capsys,
 def test_int_in_range_rejects_huge_values(value):
     with pytest.raises(argparse.ArgumentTypeError):
         m.int_in_range(0, 63)(value)
+
+# --------------------------------------------------------------------------- #
+# Release year extraction
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(
+    "filename, expected",
+    [
+        ("The Matrix (1999).mkv", "1999"),
+        ("Inception (2010).mkv", "2010"),
+        ("Movie Title (2024) [1080p].mkv", "2024"),
+        ("Movie Title.mkv", None),
+        ("Movie Title (ABC).mkv", None),
+        ("Movie Title (99).mkv", None),
+        ("Movie Title (1999) (Director's Cut).mkv", "1999"),
+    ],
+)
+def test_extract_release_year(tmp_path, filename, expected):
+    assert m.extract_release_year(tmp_path / filename) == expected
+
 
 # --------------------------------------------------------------------------- #
 # ffprobe wrappers (subprocess mocked)
