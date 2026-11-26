@@ -10,6 +10,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +74,7 @@ def fmt_size(n: float) -> str:
 
 def tmp_output_path(file_path: Path) -> Path:
     """Generate a temporary output file path on the same filesystem for atomic replacement."""
-    return file_path.with_name(f".{file_path.stem}_av1_{JOB_ID}_t{TASK_ID}.mkv")
+    return file_path.with_name(f".{file_path.stem}_av1_{JOB_ID}_t{TASK_ID}_{uuid.uuid4().hex}.mkv")
 
 
 # --------------------------------------------------------------------------- #
@@ -181,6 +182,7 @@ def build_ffmpeg_cmd(local_input: Path, tmp_output: Path,
     release_year = extract_release_year(local_input)
     if release_year:
         cmd.extend(["-metadata", f"date={release_year}"])
+        cmd.extend(["-metadata", f"DATE_RELEASED={release_year}"])
 
     cmd.append(str(tmp_output))
 
