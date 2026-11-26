@@ -65,7 +65,7 @@ def test_build_ffmpeg_cmd():
     assert "libsvtav1" in cmd
     assert cmd[cmd.index("-crf") + 1] == "24"
     assert cmd[cmd.index("-preset") + 1] == "5"
-    assert cmd[cmd.index("-svtav1-params") + 1] == "lp=8"
+    assert cmd[cmd.index("-svtav1-params") + 1] == "lp=6"
 
 def test_build_ffmpeg_cmd_adds_release_year():
     cmd = m.build_ffmpeg_cmd(
