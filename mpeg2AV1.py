@@ -574,7 +574,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Convert MPEG-2 MKV files to AV1.")
     ap.add_argument("library", type=Path, help="Root directory of the video library")
     ap.add_argument("--threads", type=int_in_range(*THREADS_RANGE), default=None,
-                    metavar="1..1024", help="SVT-AV1 threads per task")
+                    metavar="0..6", help="SVT-AV1 threads per task")
     ap.add_argument("--crf", type=int_in_range(*CRF_RANGE), default=24,
                     metavar="0..63", help="Quality (lower = better/larger)")
     ap.add_argument("--preset", type=int_in_range(*PRESET_RANGE), default=4,
