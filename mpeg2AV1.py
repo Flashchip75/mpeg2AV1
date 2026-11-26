@@ -511,10 +511,18 @@ def resolve_threads(cli_value: int | None) -> int:
     """Determine encoder thread count prioritizing CLI argument, Slurm environment, then CPU affinity."""
     if cli_value is not None:
         return cli_value
-    env = os.environ.get("SLURM_CPUS_PER_TASK")
+    
+    env = os.environ.get("SLURM_CPUS_PER_TASK", "").strip()
     if env:
-        return int(env)
-    return len(os.sched_getaffinity(0))
+        try:
+            cpus = int(env)
+            if cpus > 0:
+                return cpus
+        except ValueError:
+            log(f"  [Warning] Invalid SLURM_CPUS_PER_TASK={env!r}; falling back to CPU affinity.")
+
+    affinity_count = len(os.sched_getaffinity(0))
+    return max(1, affinity_count)
 
 def int_in_range(lo: int, hi: int):
     """argparse type: a whole number within [lo, hi]."""
