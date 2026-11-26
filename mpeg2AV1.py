@@ -102,8 +102,7 @@ def graceful_exit(signum, frame):
     cleanup_active()
 
     log("Clean exit. Original file untouched.")
-    # os._exit: a prefetch copy in the worker thread can't be interrupted,
-    # so sys.exit() would hang waiting for it.
+    # Exit immediately after cleaning up the active FFmpeg process.
     os._exit(128 + signum)
 
 
@@ -277,7 +276,7 @@ def verify_output(output: Path, original_duration: float) -> bool:
 
 
 def convert_to_av1(file_path: Path, threads: int, crf: int, preset: int) -> tuple[bool, int, int]:
-    """Encode an already-staged file and atomically replace the original."""
+    """Encode the original file and atomically replace it after verification."""
     global active_tmp_output
 
     tmp_output = tmp_output_path(file_path)
@@ -307,13 +306,16 @@ def convert_to_av1(file_path: Path, threads: int, crf: int, preset: int) -> tupl
         original_size = file_path.stat().st_size
         output_size = tmp_output.stat().st_size
 
-        # Atomic replacement: the original is only replaced after verification
+        # Keep original if encoding did not reduce file size
         if output_size >= original_size:
             log(
                 f"  Output is not smaller: {fmt_size(original_size)} -> "
                 f"{fmt_size(output_size)}. Keeping original."
             )
             return False, original_size, output_size
+
+        # Atomically replace original with verified AV1 output
+        os.replace(tmp_output, file_path)
 
         log("  Success: original replaced with verified AV1 file.")
         log(
@@ -409,7 +411,7 @@ def dry_run_library(library_dir: Path, my_files: list[Path], threads: int,
 
 def process_library(library_dir: Path, threads: int, crf: int, 
                     preset: int, dry_run: bool) -> None:
-    """Traverse the video library, manage background prefetch staging, and execute conversions."""
+    """Traverse the video library and convert MPEG-2 files assigned to this task."""
     try:
         mkv_files = find_mkv_files(library_dir)
     except OSError as e:
