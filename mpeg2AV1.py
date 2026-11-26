@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import shutil
@@ -12,7 +11,6 @@ import sys
 import time
 import hashlib
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,16 +23,11 @@ TOTAL_TASKS = int(os.environ.get("SLURM_NTASKS", 1))
 JOB_ID = os.environ.get("SLURM_JOB_ID", "manual")
 NODE = os.environ.get("SLURMD_NODENAME", "local")
 
-DOWNLOAD_SLOTS_PER_NODE = 2
 PROGRESS_INTERVAL = 60       # seconds between progress lines
 SCRATCH_ROOT = Path("/tmp")
 SKIP_MARKERS = ("_temp", "_debug", "_av1_test")
 
 VERBOSE = False
-
-MIN_FREE_PCT = 10.0             # keep at least this % of the scratch device free
-SPACE_POLL_SECONDS = 30         # how often to re-check while waiting
-SPACE_WAIT_TIMEOUT = 4 * 3600   # give up on a file after waiting this long
 
 THREADS_RANGE = (1, 1024)
 CRF_RANGE = (0, 63)
@@ -45,7 +38,6 @@ MAX_CONSECUTIVE_FAILURES = 3
 # State needed by the signal handler
 active_ffmpeg_proc: subprocess.Popen | None = None
 active_tmp_output: Path | None = None
-active_staged: set[Path] = set()
 
 
 # --------------------------------------------------------------------------- #
@@ -105,8 +97,6 @@ def cleanup_active() -> None:
     """Remove any active temporary files and staged scratch files."""
     if active_tmp_output is not None:
         active_tmp_output.unlink(missing_ok=True)
-    for p in list(active_staged):
-        p.unlink(missing_ok=True)
 
 
 def graceful_exit(signum, frame):
@@ -124,7 +114,6 @@ def graceful_exit(signum, frame):
             proc.wait()
 
     cleanup_active()
-    shutil.rmtree(scratch_dir(), ignore_errors=True)
 
     log("Clean exit. Original file untouched.")
     # os._exit: a prefetch copy in the worker thread can't be interrupted,
@@ -374,120 +363,6 @@ def convert_to_av1(file_path: Path, threads: int, crf: int, preset: int) -> tupl
 
 
 # --------------------------------------------------------------------------- #
-# Staging / prefetching
-# --------------------------------------------------------------------------- #
-
-
-class NotEnoughSpace(Exception):
-    pass
-
-
-def wait_for_space(path: Path, incoming_bytes: int, min_free_pct: float | None = None) -> None:
-    """Block until copying `incoming_bytes` still leaves >= min_free_pct free.
-
-    Raises NotEnoughSpace if the file can never fit or the wait times out.
-    """
-    min_free_pct = MIN_FREE_PCT if min_free_pct is None else min_free_pct
-    deadline = time.time() + SPACE_WAIT_TIMEOUT
-    waited = False
-
-    while True:
-        usage = shutil.disk_usage(path)
-        free_after = 100 * (usage.free - incoming_bytes) / usage.total
-
-        if free_after >= min_free_pct:
-            vlog(f"[prefetch] space ok: {free_after:.1f}% would remain free")
-            return
-
-        # Even an empty device couldn't hold it: waiting won't help
-        if 100 * (usage.total - incoming_bytes) / usage.total < min_free_pct:
-            raise NotEnoughSpace(
-                f"{fmt_size(incoming_bytes)} can never fit on a {fmt_size(usage.total)} "
-                f"device while keeping {min_free_pct:.0f}% free"
-            )
-
-        if time.time() >= deadline:
-            raise NotEnoughSpace(
-                f"waited {fmt_secs(SPACE_WAIT_TIMEOUT)} for scratch space "
-                f"({free_after:.1f}% would remain, need {min_free_pct:.0f}%)"
-            )
-
-        if not waited:
-            log(
-                f"  [prefetch] waiting for scratch space: staging {fmt_size(incoming_bytes)} "
-                f"would leave {free_after:.1f}% free (need {min_free_pct:.0f}%)"
-            )
-            waited = True
-        time.sleep(SPACE_POLL_SECONDS)
-
-
-@contextmanager
-def download_slot():
-    """Node-local limit on concurrent downloads (flock is released if we die)."""
-    waited = False
-    while True:
-        for k in range(DOWNLOAD_SLOTS_PER_NODE):
-            f = open(SCRATCH_ROOT / f"dlslot_{JOB_ID}_{NODE}_{k}.lock", "w")
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                f.close()
-                continue
-            vlog(f"[prefetch] acquired download slot {k}")
-            try:
-                yield
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-                f.close()
-                vlog(f"[prefetch] released download slot {k}")
-            return
-        if not waited:
-            vlog("[prefetch] all download slots busy, waiting...")
-            waited = True
-        time.sleep(1)
-
-
-def prepare(idx: int, file_path: Path, scratch: Path) -> tuple[str, dict | None, Path | None]:
-    """Probe a file and stage it locally. Runs in the background thread.
-
-    Returns (status, metadata, local_path) with status in
-    {"ready", "skipped", "failed"}.
-    """
-    meta = probe_video(file_path)
-    if meta is None:
-        return "failed", None, None
-    if meta.get("codec_name") != "mpeg2video":
-        return "skipped", meta, None
-
-    local = staged_path(scratch, idx, file_path)
-    part = local.with_name(local.name + ".part")
-    active_staged.update((part, local))
-    try:
-        size = file_path.stat().st_size
-        with download_slot():
-            wait_for_space(scratch, size)
-            t0 = time.time()
-            shutil.copy2(file_path, part)
-            os.replace(part, local)
-            meta["_staged_sha256"] = sha256_file(local)
-            elapsed = time.time() - t0
-            size = local.stat().st_size
-            rate = size / elapsed / 1e6 if elapsed > 0 else 0
-            log(
-                f"  [prefetch] staged {file_path.name} "
-                f"({fmt_size(size)}) in {fmt_secs(elapsed)} ({rate:.0f} MB/s)"
-            )
-        active_staged.discard(part)
-        return "ready", meta, local
-    except Exception as e:
-        log(f"  [prefetch] staging failed for {file_path.name}: {e}")
-        part.unlink(missing_ok=True)
-        local.unlink(missing_ok=True)
-        active_staged.difference_update((part, local))
-        return "failed", meta, None
-
-
-# --------------------------------------------------------------------------- #
 # Library processing
 # --------------------------------------------------------------------------- #
 
@@ -728,10 +603,7 @@ def main() -> None:
     log(f"Using {threads} encoder threads per task.")
     log(f"Library: {args.library.resolve()}")
     log(f"Slurm task: id {TASK_ID} (ids 0-{TOTAL_TASKS - 1}, {TOTAL_TASKS} tasks total) on {NODE} (job {JOB_ID})")
-    vlog(
-        f"crf={args.crf} preset={args.preset} "
-        f"download_slots_per_node={DOWNLOAD_SLOTS_PER_NODE} dry_run={args.dry_run}"
-    )
+    vlog(f"crf={args.crf} preset={args.preset} dry_run={args.dry_run}")
 
     process_library(args.library, threads, args.crf, args.preset, args.dry_run)
 
